@@ -61,7 +61,7 @@ int SerialSolar = A7;
 
 //Variables
 
-//Data entries
+//Data entries variables
 const byte numChars = 32;
 char receivedChars[numChars];  // an array to store the received data
 boolean newData = false;
@@ -83,7 +83,7 @@ boolean autoControl = false;
 byte autoControlStep = 0;
 
 
-//new Power Data
+//new if Power Data from PV Solar
 boolean newVBatt1 = 0;
 boolean newABatt1 = 0;
 boolean newVBatt2 = 0;
@@ -91,6 +91,11 @@ boolean newABatt2 = 0;
 boolean newVSolar = 0;
 boolean newASolar = 0;
 boolean newAMain = 0;
+
+//String to send to Solar Regulator for data
+byte Solar[] = { 0xC0, 0xF0, 0x01, 0x00, 0x00, 0xE4, 0x62, 0xC0, 0xFF };
+byte Batt1[] = { 0xC0, 0xF0, 0x02, 0x02, 0x00, 0x84, 0x93, 0xC0, 0xFF };
+byte Batt2[] = { 0xC0, 0xF0, 0x02, 0x82, 0x00, 0x44, 0xF2, 0xC0, 0xFF };
 
 
 //Voltage, Amperage and Relay
@@ -105,12 +110,22 @@ float AWinch = 0;
 float ATurbine = 0;
 float APowerManager = 0;
 
-int tavg = 10;
+//To send DV, averaged data
+float VBatt1a = 0;
+float ABatt1a = 0;
+float VBatt2a = 0;
+float ABatt2a = 0;
+float VSolara = 0;
+float ASolara = 0;
+float AWincha = 0;
+float ATurbinea = 0;
+float APowerManagera = 0;
+
+
+//Tab lenght can be bigger than lenghtOfTab, and must be a constant so the lenghtOfTab really define the average lenght
+byte lenghtOfTab = 3;
 int averageTab = 0;
 boolean longAverage = 0;
-
-byte lenghtOfTab = 3;
-
 float VBatt1Tab[60];
 float ABatt1Tab[60];
 float VBatt2Tab[60];
@@ -120,11 +135,6 @@ float ASolarTab[60];
 float ATurbineTab[60];
 float APowerManagerTab[60];
 float AWinchTab[60];
-
-
-byte Solar[] = { 0xC0, 0xF0, 0x01, 0x00, 0x00, 0xE4, 0x62, 0xC0, 0xFF };
-byte Batt1[] = { 0xC0, 0xF0, 0x02, 0x02, 0x00, 0x84, 0x93, 0xC0, 0xFF };
-byte Batt2[] = { 0xC0, 0xF0, 0x02, 0x82, 0x00, 0x44, 0xF2, 0xC0, 0xFF };
 
 
 //Watch, Warning, Alarm and Error
@@ -159,16 +169,15 @@ void setup() {
   pinMode(Batt_2toWinch, OUTPUT);           //pin10
   pinMode(TurbineBrake, OUTPUT);            //pin11
   pinMode(TurbineRelease, OUTPUT);          //pin12
-
-  pinMode(AccPower, OUTPUT);         //pinA5
-
-  pinMode(Resetpin, OUTPUT);                //pinA6
-  digitalWrite(Resetpin, HIGH);
+  pinMode(AccPower, OUTPUT);                //pinA5
 
   pinMode(SerialSolar, OUTPUT);             //pinA7
 
-  //Serial3.begin(9600);
- 
+  //Reset must have 5v, otherwise is resetting
+  pinMode(Resetpin, OUTPUT);                //pinA6
+  digitalWrite(Resetpin, HIGH);
+
+
   Serial1.begin(19200);
   digitalWrite(SerialTxRx, HIGH);
   Serial1.println();
@@ -176,6 +185,7 @@ void setup() {
   Serial1.println("Powering Arduino");
   Serial1.flush();
 
+  //Eeprom will be 255 if never uploaded with this code
   if (EEPROM.read(EepromAlreadyConfigure) == 255) {
     EEPROM.write(EepromBatterytoMainController, BatterytoMainController);
     EEPROM.write(EepromManualtoMainController, ManualtoMainController);
@@ -199,6 +209,7 @@ void setup() {
     Serial1.flush();
   }
 
+  //if the Power Manager is set to work on manual on which parameter
   if (ManualtoMainController == true || ManualtoWinch == true || ManualtoTurbine == true) {
     Serial1.println();
     Serial1.println("!!!! Warning !!!!");
@@ -215,6 +226,7 @@ void setup() {
     Serial1.flush();
   }
 
+  //Collecting data before starting to see if it's need to switch some relays
   autoCollectData();
   bootUp = 0;
   Serial1.println("   <Arduino is ready>");
@@ -271,7 +283,7 @@ void batt_1toTurbine(){
   delay(60);
   digitalWrite(Batt_1toTurbine, LOW);
   if(EEPROM.read(EepromBatterytoTurbine) != 1){
-    EEPROM.write(EepromBatterytoWinch, 1);
+    EEPROM.write(EepromBatterytoTurbine, 1);
   }
   BatterytoTurbine = 1;
 }
@@ -280,7 +292,7 @@ void batt_2toTurbine(){
   delay(60);
   digitalWrite(Batt_2toTurbine, LOW);
   if(EEPROM.read(EepromBatterytoTurbine) != 2){
-    EEPROM.write(EepromBatterytoWinch, 2);
+    EEPROM.write(EepromBatterytoTurbine, 2);
   }
   BatterytoTurbine = 2;
 }
@@ -440,15 +452,15 @@ void collectPowerData() {
   if (newASolar == 1){newASolar = 0;} else {ASolar = 0; newASolar = 0;}
   
   if(VBatt1 != 0 && VBatt2 == 0){
-    batt_1toMain();
-    batt_1toWinch();
-    batt_1toTurbine();
+    if (EEPROM.read(EepromManualtoMainController) == 0){batt_1toMain();}    
+    if (EEPROM.read(EepromManualtoWinch) == 0){batt_1toWinch();}
+    if (EEPROM.read(EepromManualtoTurbine) == 0){batt_1toTurbine();}
   }
 
   if(VBatt1 == 0 && VBatt2 != 0){
-    batt_2toMain();
-    batt_2toWinch();
-    batt_2toTurbine();
+    if (EEPROM.read(EepromManualtoMainController) == 0){batt_2toMain();}
+    if (EEPROM.read(EepromManualtoWinch) == 0){batt_2toWinch();}
+    if (EEPROM.read(EepromManualtoTurbine) == 0){batt_2toTurbine();}
   }
 
   //Power sends to the Winch
@@ -580,17 +592,15 @@ void autoCollectData(){
     collectPowerData();
     collectRelativeHumidity();
     
-    //VBatt1Tab[averageTab] = VBatt1;
-    VBatt1 = averageData(VBatt1Tab, VBatt1);
-    ABatt1 = averageData(ABatt1Tab, ABatt1);
-    VBatt2 = averageData(VBatt2Tab, VBatt2);
-    ABatt2 = averageData(ABatt2Tab, ABatt2);    
-    VSolar = averageData(VSolarTab, VSolar);    
-    ASolar = averageData(ASolarTab, ASolar);    
-    ATurbine = averageData(ATurbineTab, ATurbine);    
-    APowerManager = averageData(APowerManagerTab, APowerManager);
-    AWinch = averageData(AWinchTab, AWinch);
-
+    VBatt1a = averageData(VBatt1Tab, VBatt1);
+    ABatt1a = averageData(ABatt1Tab, ABatt1);
+    VBatt2a = averageData(VBatt2Tab, VBatt2);
+    ABatt2a = averageData(ABatt2Tab, ABatt2);    
+    VSolara = averageData(VSolarTab, VSolar);    
+    ASolara = averageData(ASolarTab, ASolar);    
+    ATurbinea = averageData(ATurbineTab, ATurbine);
+    APowerManagera = averageData(APowerManagerTab, APowerManager);
+    AWincha = averageData(AWinchTab, AWinch);
     
     if (averageTab == lenghtOfTab - 1){
       averageTab = 0;
@@ -601,7 +611,6 @@ void autoCollectData(){
     nextAverageData = currentMillis + (timeBetweenAutoCollect*1000);
 
     if(bootUp == 0){
-      Serial1.println();
       Serial1.println();
       Serial1.print(">");
       Serial1.flush();
@@ -686,7 +695,14 @@ void showNewData() {
         showPowerData();
         collectRelativeHumidity();
         Serial1.println((String) "Relative Humidity : " + WaterDetectionPercent + "%");
-        Serial1.println("");
+        Serial1.println();
+        Serial1.flush();
+      }
+
+      else if (strcmp(receivedChars, "DV") == 0 || strcmp(receivedChars, "dv") == 0){
+        Serial1.print((String)VBatt1a + ", " + ABatt1a + ", " + VBatt2a + ", " + ABatt2a + ", ");
+        Serial1.println((String)VSolara + ", " + ASolara + ", " + APowerManagera + ", " + ATurbinea + ", " + AWincha + ", " + WaterDetectionPercent);
+        Serial1.println();
         Serial1.flush();
       }
 
@@ -708,6 +724,7 @@ void showNewData() {
         Serial1.println("");
         Serial1.println("Other Options :");
         Serial1.println("DS to Display Status");
+        Serial1.println("DV to Display Average Data");
         Serial1.println("H for Help");
         Serial1.println("W for Water detection sensor");
         Serial1.println("End");
@@ -789,11 +806,17 @@ void showNewData() {
           autoControlStep = 1;
         } else if (autoControlStep == 1 && (strcmp(receivedChars, "y") == 0 || strcmp(receivedChars, "Y") == 0)) {
           ManualtoMainController = 0;
-          EEPROM.write(EepromManualtoMainController, ManualtoMainController);
+          if (EEPROM.read(EepromManualtoMainController) != 0){
+            EEPROM.write(EepromManualtoMainController, 0);
+          }
           ManualtoWinch = 0;
-          EEPROM.write(EepromManualtoWinch, ManualtoWinch);
+          if(EEPROM.read(EepromManualtoWinch) != 0){
+            EEPROM.write(EepromManualtoWinch, ManualtoWinch);
+          }
           ManualtoTurbine = 0;
-          EEPROM.write(EepromManualtoTurbine, ManualtoTurbine);
+          if (EEPROM.read(EepromManualtoTurbine) != 0){
+            EEPROM.write(EepromManualtoTurbine, 0);
+          }
           Serial1.println("The Power Manager is now set to Automated Control");
           Serial1.println();
           Serial1.flush();
@@ -846,9 +869,21 @@ void showNewData() {
 
         else if (manualControlStep == 111 && (strcmp(receivedChars, "y") == 0 || strcmp(receivedChars, "Y") == 0)) {
           Serial1.println();
+
           batt_1toMain();
+          if (EEPROM.read(EepromManualtoMainController) != 1){
+            EEPROM.write(EepromManualtoMainController, 1);
+          }
+
           batt_1toWinch();
+          if (EEPROM.read(EepromManualtoWinch) != 1){
+            EEPROM.write(EepromManualtoWinch, 1);
+          }
+
           batt_1toTurbine();
+          if (EEPROM.read(EepromManualtoTurbine) != 1){
+            EEPROM.write(EepromManualtoTurbine, 1);
+          }    
 
           Serial1.println("All powers switchs to Battery #1");
           Serial1.println();
@@ -867,9 +902,21 @@ void showNewData() {
 
         else if (manualControlStep == 112 && (strcmp(receivedChars, "y") == 0 || strcmp(receivedChars, "Y") == 0)) {
           Serial1.println();
+
           batt_2toMain();
+          if (EEPROM.read(EepromManualtoMainController) != 1){
+            EEPROM.write(EepromManualtoMainController, 1);
+          }
+
           batt_2toWinch();
+          if (EEPROM.read(EepromManualtoWinch) != 1){
+            EEPROM.write(EepromManualtoWinch, 1);
+          }
+
           batt_2toTurbine();
+          if (EEPROM.read(EepromManualtoTurbine) != 1){
+            EEPROM.write(EepromManualtoTurbine, 1);
+          }    
           Serial1.println("All powers switchs to Battery #2");
           Serial1.println();
           Serial1.flush();
@@ -896,7 +943,9 @@ void showNewData() {
         else if (manualControlStep == 121 && (strcmp(receivedChars, "y") == 0 || strcmp(receivedChars, "Y") == 0)) {
           Serial1.println();
           batt_1toMain();
-          Eeprom.write(EepromBatteryManualtoMainController = 1);
+          if (EEPROM.read(EepromManualtoMainController) != 1){
+            EEPROM.write(EepromManualtoMainController, 1);
+          }
           Serial1.println("The Main Controller is now powered by Battery #1");
           Serial1.println();
           Serial1.flush();
@@ -915,7 +964,9 @@ void showNewData() {
         else if (manualControlStep == 122 && (strcmp(receivedChars, "y") == 0 || strcmp(receivedChars, "Y") == 0)) {
           Serial1.println();
           batt_2toMain();
-          Eeprom.write(EepromBatteryManualtoMainController = 1);
+          if (EEPROM.read(EepromManualtoMainController) != 1){
+            EEPROM.write(EepromManualtoMainController, 1);
+          }
           Serial1.println("The Main Controller is now powered by Battery #2");
           Serial1.println();
           Serial1.flush();
@@ -942,7 +993,9 @@ void showNewData() {
         else if (manualControlStep == 131 && (strcmp(receivedChars, "y") == 0 || strcmp(receivedChars, "Y") == 0)) {
           Serial1.println();
           batt_1toWinch();
-          Eeprom.write(EepromBatteryManualtoWinch = 1);
+          if (EEPROM.read(EepromManualtoWinch) != 1){
+            EEPROM.write(EepromManualtoWinch, 1);
+          }
           Serial1.println("The Winch is now powered by Battery #1");
           Serial1.println();
           Serial1.flush();
@@ -961,7 +1014,9 @@ void showNewData() {
         else if (manualControlStep == 132 && (strcmp(receivedChars, "y") == 0 || strcmp(receivedChars, "Y") == 0)) {
           Serial1.println();
           batt_2toWinch();
-          Eeprom.write(EepromBatterytoWinch = 1);
+          if (EEPROM.read(EepromManualtoWinch) != 1){
+            EEPROM.write(EepromManualtoWinch, 1);
+          }
           Serial1.println("The Winch is now powered by Battery #2");
           Serial1.println();
           Serial1.flush();
@@ -988,6 +1043,9 @@ void showNewData() {
         else if (manualControlStep == 141 && (strcmp(receivedChars, "y") == 0 || strcmp(receivedChars, "Y") == 0)) {
           Serial1.println();
           batt_1toTurbine();
+          if (EEPROM.read(EepromManualtoTurbine) != 1){
+            EEPROM.write(EepromManualtoTurbine, 1);
+          }
           Serial1.println("The Turbine is now only charging Battery #1");
           Serial1.println();
           Serial1.flush();
@@ -1007,6 +1065,9 @@ void showNewData() {
         else if (manualControlStep == 142 && (strcmp(receivedChars, "y") == 0 || strcmp(receivedChars, "Y") == 0)) {
           Serial1.println();
           batt_2toTurbine();
+          if (EEPROM.read(EepromManualtoTurbine) != 1){
+            EEPROM.write(EepromManualtoTurbine, 1);
+          }
           Serial1.println("The Turbine is now only charging Battery #2");
           Serial1.println();
           Serial1.flush();
