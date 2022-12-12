@@ -11,11 +11,16 @@ byte EepromManualtoWinch = 203;            // (0 = Autorun, 1 = Override)
 byte EepromBatterytoTurbine = 204;         //(1 = Battery #1, 2 = Battery #2)
 byte EepromManualtoTurbine = 205;          // (0 = Autorun, 1 = Override)
 byte EepromTurbineBrakeActivated = 206;    //(0 = Released, 1 = Brake On)
+byte EepromTurbineRelayState = 207;        //(1 = Digital 11, 2 = Digital 12)
+
 
 //Relay State
 int BatterytoMainController = 1;
 int BatterytoTurbine = 1;
 int BatterytoWinch = 1;
+int TurbineRelayState = 1;
+
+int turbineState = 0;
 
 //Manual Control
 boolean ManualtoMainController = 0;
@@ -48,16 +53,17 @@ int WaterDetectionPercent = 0;
 int Batt_1toMainController = 2;
 //int SerialSolarTx = 3;
 int Batt_2toMainController = 4;
-int SerialTxRx = 5;
+int SerialTxRx = 13;
 //int SerialSolarRx = 6;
 int Batt_1toTurbine = 7;
 int Batt_2toTurbine = 8;
 int Batt_1toWinch = 9;
 int Batt_2toWinch = 10;
-int TurbineBrake = 11;
-int TurbineRelease = 12;
+int TurbineRelayState1 = 11;
+int TurbineRelayState2 = 12;
 int SerialSolar = A7;
 
+int IfTurbineIsBraked = 5;
 
 //Variables
 
@@ -72,6 +78,10 @@ unsigned long humidityTimer = 0; //to compare with millis()
 boolean closeRelay = false;
 unsigned long currentMillis = 0;
 int timeBetweenAutoCollect = 30; //sec
+unsigned long WinchDelayBatt1 = 0;
+unsigned long WinchDelayBatt2 = 0;
+unsigned long TurbineDelayBatt1 = 0;
+unsigned long TurbineDelayBatt2 = 0;
 
 
 //Configurable Menu
@@ -123,7 +133,7 @@ float APowerManagera = 0;
 
 
 //Tab lenght can be bigger than lenghtOfTab, and must be a constant so the lenghtOfTab really define the average lenght
-byte lenghtOfTab = 3;
+byte lenghtOfTab = 60;
 int averageTab = 0;
 boolean longAverage = 0;
 float VBatt1Tab[60];
@@ -159,6 +169,10 @@ int navg = 15;
 ///
 
 void setup() {
+  //Reset must have 5v, otherwise is resetting
+  pinMode(Resetpin, OUTPUT);                //pinA6
+  digitalWrite(Resetpin, HIGH);
+
   //réattribuer les pins
   pinMode(Batt_1toMainController, OUTPUT);  //pin2
   pinMode(Batt_2toMainController, OUTPUT);  //pin3
@@ -167,15 +181,14 @@ void setup() {
   pinMode(Batt_2toTurbine, OUTPUT);         //pin8
   pinMode(Batt_1toWinch, OUTPUT);           //pin9
   pinMode(Batt_2toWinch, OUTPUT);           //pin10
-  pinMode(TurbineBrake, OUTPUT);            //pin11
-  pinMode(TurbineRelease, OUTPUT);          //pin12
+  pinMode(TurbineRelayState1, OUTPUT);      //pin11
+  pinMode(TurbineRelayState2, OUTPUT);      //pin12
   pinMode(AccPower, OUTPUT);                //pinA5
+  pinMode(IfTurbineIsBraked, INPUT);
 
   pinMode(SerialSolar, OUTPUT);             //pinA7
 
-  //Reset must have 5v, otherwise is resetting
-  pinMode(Resetpin, OUTPUT);                //pinA6
-  digitalWrite(Resetpin, HIGH);
+
 
 
   Serial1.begin(19200);
@@ -194,6 +207,7 @@ void setup() {
     EEPROM.write(EepromBatterytoTurbine, BatterytoTurbine);
     EEPROM.write(EepromManualtoTurbine, ManualtoTurbine);
     EEPROM.write(EepromTurbineBrakeActivated, TurbineBrakeActivated);
+    EEPROM.write(EepromTurbineRelayState, TurbineRelayState);
     EEPROM.write(EepromAlreadyConfigure, 1);
     Serial1.println("System set to Default configuration");
     Serial1.flush();
@@ -205,6 +219,7 @@ void setup() {
     BatterytoTurbine = EEPROM.read(EepromBatterytoTurbine);
     ManualtoTurbine = EEPROM.read(EepromManualtoTurbine);
     TurbineBrakeActivated = EEPROM.read(EepromTurbineBrakeActivated);
+    TurbineRelayState = EEPROM.read(EepromTurbineRelayState);    
     Serial1.println("Previous configuration loaded");
     Serial1.flush();
   }
@@ -262,7 +277,7 @@ void batt_2toMain(){
 }
 void batt_1toWinch(){
   digitalWrite(Batt_1toWinch, HIGH);
-  delay(60);
+  delay(100);
   digitalWrite(Batt_1toWinch, LOW);
   if(EEPROM.read(EepromBatterytoWinch) != 1){
     EEPROM.write(EepromBatterytoWinch, 1);
@@ -271,7 +286,7 @@ void batt_1toWinch(){
 }
 void batt_2toWinch(){
   digitalWrite(Batt_2toWinch, HIGH);
-  delay(60);
+  delay(100);
   digitalWrite(Batt_2toWinch, LOW);
   if(EEPROM.read(EepromBatterytoWinch) != 2){
     EEPROM.write(EepromBatterytoWinch, 2);
@@ -451,16 +466,21 @@ void collectPowerData() {
   if (newVSolar == 1){newVSolar = 0;} else {VSolar = 0; newVSolar = 0;}
   if (newASolar == 1){newASolar = 0;} else {ASolar = 0; newASolar = 0;}
   
+
   if(VBatt1 != 0 && VBatt2 == 0){
-    if (EEPROM.read(EepromManualtoMainController) == 0){batt_1toMain();}    
-    if (EEPROM.read(EepromManualtoWinch) == 0){batt_1toWinch();}
-    if (EEPROM.read(EepromManualtoTurbine) == 0){batt_1toTurbine();}
+    BatterytoMainController = 1;
+    if (EEPROM.read(EepromManualtoMainController) != 0){EEPROM.write(EepromManualtoMainController, 0);}
+    if (EEPROM.read(EepromBatterytoMainController) != 1){EEPROM.write(EepromBatterytoMainController, 1);}
+    if (EEPROM.read(EepromManualtoWinch) == 0 && BatterytoWinch == 2){batt_1toWinch();}
+    if (EEPROM.read(EepromManualtoTurbine) == 0 && BatterytoTurbine == 2){batt_1toTurbine();}
   }
 
   if(VBatt1 == 0 && VBatt2 != 0){
-    if (EEPROM.read(EepromManualtoMainController) == 0){batt_2toMain();}
-    if (EEPROM.read(EepromManualtoWinch) == 0){batt_2toWinch();}
-    if (EEPROM.read(EepromManualtoTurbine) == 0){batt_2toTurbine();}
+    BatterytoMainController = 2;
+    if (EEPROM.read(EepromManualtoMainController) != 0){EEPROM.write(EepromManualtoMainController, 0);}
+    if (EEPROM.read(EepromBatterytoMainController) != 2){EEPROM.write(EepromBatterytoMainController, 2);}
+    if (EEPROM.read(EepromManualtoWinch) == 0 && BatterytoWinch == 1){batt_2toWinch();}
+    if (EEPROM.read(EepromManualtoTurbine) == 0 && BatterytoWinch == 1){batt_2toTurbine();}
   }
 
   //Power sends to the Winch
@@ -483,7 +503,7 @@ void collectPowerData() {
   
   }
 
-  //Collecting information from Turbine
+  //Collecting information from Turbine, doing the loop 1 time
   for (int t = 0; t<1; t++){
     int k = 0;
     float sum = 0;
@@ -500,10 +520,54 @@ void collectPowerData() {
     }
     //Serial1.println(sum / navg);
     Serial1.print(".");
+    //Si le tier des valeurs (navg/3) sont autour de 0A, dire que l'éolienne donne 0A
     if (k < (navg/3)) { ATurbine = (TurbineScale * (sum / navg)) + TurbineOffset;} //si 1/3 des valeurs sont 0, écrire 0
     else{ATurbine = 0;}
     //Serial1.println((String)"ATurbine = "+ ATurbine);
     //Serial1.flush();
+    
+    if (ATurbine < -0.05){
+      if (EEPROM.read(EepromTurbineRelayState) == 1){
+        digitalWrite(TurbineRelayState2, HIGH);
+        delay(60);
+        digitalWrite(TurbineRelayState2, LOW);
+        turbineState = digitalRead(IfTurbineIsBraked);
+        if (turbineState != HIGH){
+          digitalWrite(TurbineRelayState1, HIGH);
+          delay(60);
+          digitalWrite(TurbineRelayState1, LOW);
+          TurbineRelayState = 1;
+          EEPROM.write(EepromTurbineRelayState, 1);
+        }
+        else {
+          TurbineRelayState = 2;
+          EEPROM.write(EepromTurbineRelayState, 2);
+        }
+      }
+
+      else if (EEPROM.read(EepromTurbineRelayState) == 2){
+        digitalWrite(TurbineRelayState1, HIGH);
+        delay(60);
+        digitalWrite(TurbineRelayState1, LOW);
+        turbineState = digitalRead(IfTurbineIsBraked);
+        if (turbineState != HIGH){
+          digitalWrite(TurbineRelayState2, HIGH);
+          delay(60);
+          digitalWrite(TurbineRelayState2, LOW);
+          TurbineRelayState = 2;
+          EEPROM.write(EepromTurbineRelayState, 2);
+        }
+        else {
+          TurbineRelayState = 1;
+          EEPROM.write(EepromTurbineRelayState, 1);
+        }
+      }
+
+      TurbineBrakeActivated = 1;
+      if (EEPROM.read(EepromTurbineBrakeActivated) == 0){
+        EEPROM.write(EepromTurbineBrakeActivated, 1);
+      }
+    }
   }
 
   //Power drawn by Power Manager and Main Controller
@@ -525,6 +589,94 @@ void collectPowerData() {
       //Serial1.flush();
   }
   Serial3.end();
+ 
+  turbineState = digitalRead(IfTurbineIsBraked);
+  if (turbineState == HIGH){
+    TurbineBrakeActivated = 1;
+    if(EEPROM.read(TurbineBrakeActivated) == 0){
+      EEPROM.write(TurbineBrakeActivated, 1);
+    }    
+  }
+  else{
+    TurbineBrakeActivated = 0;
+    if(EEPROM.read(TurbineBrakeActivated) == 1){
+      EEPROM.write(TurbineBrakeActivated, 0);
+    }
+  }
+  
+  currentMillis = millis();
+  //Conditons for the Turbine
+  if(ManualtoTurbine != 1 || TurbineBrakeActivated == 1){
+    if(ABatt2 >= 0.5 && BatterytoTurbine == 2 && VBatt1 > 8){
+      batt_1toTurbine();
+    }
+    if(ABatt1 >= 0.5 && BatterytoTurbine == 1 && VBatt2 > 8){
+      batt_2toTurbine();
+    }
+    if(ASolar == 0 && BatterytoTurbine == 2 && VBatt2 - VBatt1 >= 0.3){
+      TurbineDelayBatt2 = 0;
+      if(TurbineDelayBatt1 == 0){millis();}
+      if(currentMillis - TurbineDelayBatt1 >= 1000*60*60*2){
+        batt_1toTurbine();
+        TurbineDelayBatt1 = 0;
+      }
+    }
+    else if(ASolar == 0 && BatterytoTurbine == 1 && VBatt1 - VBatt2 >= 0.3){
+      TurbineDelayBatt1 = 0;
+      if(TurbineDelayBatt2 == 0){millis();}
+      if(currentMillis - TurbineDelayBatt2 >= 1000*60*60*2){
+        batt_2toTurbine();
+        TurbineDelayBatt2 = 0;
+      }
+    }
+    else{
+      TurbineDelayBatt1 = 0;
+      TurbineDelayBatt2 = 0;
+    }
+  }
+
+  //Conditions for the Winch
+  if(ManualtoWinch != 1){    
+    if(ASolar == 0 && ATurbine == 0 && AWinch == 0 && VBatt2 - VBatt1 >= 0.3){
+      WinchDelayBatt1 = 0;
+      if(WinchDelayBatt2 == 0){WinchDelayBatt2 = millis();}
+      if(currentMillis - WinchDelayBatt2 >= 1000*60*15){
+        batt_2toWinch();
+      }
+      WinchDelayBatt2 = 0;
+    }
+    else if(ASolar == 0 && ATurbine == 0 && AWinch == 0 && VBatt1 - VBatt2 >= 0.3){
+      WinchDelayBatt2 = 0;
+      if(WinchDelayBatt1 == 0){WinchDelayBatt1 = millis();}
+      if(currentMillis - WinchDelayBatt1 >= 1000*60*15){
+        batt_1toWinch();
+      }
+      WinchDelayBatt1 = 0;
+    }
+    else{
+      WinchDelayBatt1 = 0;
+      WinchDelayBatt2 = 0;
+    }
+
+    if(AWinch == 0 && VBatt2 - VBatt1 >= 0.7 && VBatt1 < 12.2){
+      batt_2toWinch();
+    }
+
+    if(AWinch == 0 && VBatt1 - VBatt2 >= 0.7 && VBatt2 < 12.2){
+      batt_1toWinch();
+    }
+  }
+
+
+  //Conditions for the Power Manager
+  if(ManualtoMainController != 1){
+    if(BatterytoWinch == 1 && APowerManager < 0.6 && VBatt2 - VBatt1 >= 0.3){
+      batt_2toMain();
+    }
+    if(BatterytoWinch == 2 && APowerManager < 0.6 && VBatt1 - VBatt2 >= 0.3){
+      batt_1toMain();
+    }
+  }
 }
 
 void showPowerData() {
@@ -537,7 +689,7 @@ void showPowerData() {
     Serial1.println("The Turbine's Break is Activated");
   }
   else {
-  Serial1.println((String) "Batt #" + BatterytoTurbine + " is being charged by the Turbie at " + ATurbine + "Ah.");
+  Serial1.println((String) "Batt #" + BatterytoTurbine + " is being charged by the Turbine at " + ATurbine + "Ah.");
   }
 
   Serial1.println();
@@ -673,19 +825,114 @@ void showNewData() {
     
       //Turbine Menu
       else if (strcmp(receivedChars, "TB") == 0 || strcmp(receivedChars, "tb") == 0) {
-        digitalWrite(TurbineBrake, HIGH);
-        delay(60);
-        digitalWrite(TurbineBrake, LOW);
-        TurbineBrakeActivated = 1;
-        Serial1.println("Remote Brake Activated");
+        turbineState = digitalRead(IfTurbineIsBraked);
+        if (turbineState == LOW){
+          if (TurbineRelayState == 1){
+            digitalWrite(TurbineRelayState2, HIGH);
+            delay(60);
+            digitalWrite(TurbineRelayState2, LOW);
+            turbineState = digitalRead(IfTurbineIsBraked);
+            if (turbineState != HIGH){
+              digitalWrite(TurbineRelayState1, HIGH);
+              delay(60);
+              digitalWrite(TurbineRelayState1, LOW);
+              TurbineRelayState = 1;
+              EEPROM.write(EepromTurbineRelayState, 1);
+            }
+            else {
+              TurbineRelayState = 2;
+              EEPROM.write(EepromTurbineRelayState, 2);
+            }
+          }
+          else if (TurbineRelayState == 2){
+            digitalWrite(TurbineRelayState1, HIGH);
+            delay(60);
+            digitalWrite(TurbineRelayState1, LOW);
+            turbineState = digitalRead(IfTurbineIsBraked);
+            if (turbineState != HIGH){
+              digitalWrite(TurbineRelayState2, HIGH);
+              delay(60);
+              digitalWrite(TurbineRelayState2, LOW);
+              TurbineRelayState = 2;
+              EEPROM.write(EepromTurbineRelayState, 2);
+            }
+            else {
+              TurbineRelayState = 1;
+              EEPROM.write(EepromTurbineRelayState, 1);
+            }
+          }
+          
+          TurbineBrakeActivated = 1;
+          if (EEPROM.read(EepromTurbineBrakeActivated) == 0){
+            EEPROM.write(EepromTurbineBrakeActivated, 1);          
+          }
+          Serial1.println("Turbine Brake Activated");
+        }
+        else{
+          Serial1.println("Turbine Brake was already ON");
+        }
+      }
+
+      else if (strcmp(receivedChars, "BR") == 0 || strcmp(receivedChars, "br") == 0){
+        //digitalWrite(ExternalLED, HIGH);
+        //delay(2000);
+        //digitalWrite(ExternalLED, LOW);
+        turbineState = digitalRead(IfTurbineIsBraked);
+        Serial1.print((String)"The Turbine is currently ");
+        if(turbineState == 0){
+          Serial1.println("working");
+        }
+        if(turbineState == 1){
+          Serial1.println("braked");
+        }
       }
 
       else if (strcmp(receivedChars, "TR") == 0 || strcmp(receivedChars, "tr") == 0) {
-        digitalWrite(TurbineRelease, HIGH);
-        delay(60);
-        digitalWrite(TurbineRelease, LOW);
-        TurbineBrakeActivated = 0;
-        Serial1.println("Remote Brake Released");
+        turbineState = digitalRead(IfTurbineIsBraked);
+        if (turbineState == HIGH){
+          if (TurbineRelayState == 1){
+            digitalWrite(TurbineRelayState2, HIGH);
+            delay(60);
+            digitalWrite(TurbineRelayState2, LOW);
+            turbineState = digitalRead(IfTurbineIsBraked);
+            if (turbineState != LOW){
+              digitalWrite(TurbineRelayState1, HIGH);
+              delay(60);
+              digitalWrite(TurbineRelayState1, LOW);
+              TurbineRelayState = 1;
+              EEPROM.write(EepromTurbineRelayState, 1);
+            }
+            else {
+              TurbineRelayState = 2;
+              EEPROM.write(EepromTurbineRelayState, 2);
+            }
+          }
+          else if (TurbineRelayState == 2){
+            digitalWrite(TurbineRelayState1, HIGH);
+            delay(60);
+            digitalWrite(TurbineRelayState1, LOW);
+            turbineState = digitalRead(IfTurbineIsBraked);
+            if (turbineState != LOW){
+              digitalWrite(TurbineRelayState2, HIGH);
+              delay(60);
+              digitalWrite(TurbineRelayState2, LOW);
+              TurbineRelayState = 2;
+              EEPROM.write(EepromTurbineRelayState, 2);
+            }
+            else {
+              TurbineRelayState = 1;
+              EEPROM.write(EepromTurbineRelayState, 1);
+            }
+          }
+          TurbineBrakeActivated = 0;
+          if (EEPROM.read(EepromTurbineBrakeActivated) == 1){
+            EEPROM.write(EepromTurbineBrakeActivated, 0);          
+          }
+          Serial1.println("Turbine Brake Released");
+        }
+        else {
+          Serial1.println("Turbine Brake was already OFF");
+        }
       }
 
       //Show Power Data
@@ -701,7 +948,8 @@ void showNewData() {
 
       else if (strcmp(receivedChars, "DV") == 0 || strcmp(receivedChars, "dv") == 0){
         Serial1.print((String)VBatt1a + ", " + ABatt1a + ", " + VBatt2a + ", " + ABatt2a + ", ");
-        Serial1.println((String)VSolara + ", " + ASolara + ", " + APowerManagera + ", " + ATurbinea + ", " + AWincha + ", " + WaterDetectionPercent);
+        Serial1.print((String)VSolara + ", " + ASolara + ", " + APowerManagera + ", " + ATurbinea + ", " + AWincha + ", " + WaterDetectionPercent + ", ");
+        Serial1.println((String)ManualtoMainController + BatterytoMainController + ManualtoWinch + BatterytoWinch + ManualtoTurbine + BatterytoTurbine + TurbineBrakeActivated + HumidityFlag);
         Serial1.println();
         Serial1.flush();
       }
@@ -742,7 +990,7 @@ void showNewData() {
       }
 
       // Reset
-      else if (strcmp(receivedChars, "r") == 0 || strcmp(receivedChars, "R") == 0) {
+      else if (strcmp(receivedChars, "ReSeT") == 0){
         Serial1.println();
         Serial1.println("Do you want to reset the Power Manager ?  Y/N");
         Serial1.flush();
